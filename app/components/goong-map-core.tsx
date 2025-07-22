@@ -174,6 +174,7 @@ export default function GoongMapCore({
           position.coords.longitude,
           position.coords.latitude,
         ];
+        new goongjs.Marker({ color: "red" }).setLngLat(coords).addTo(map);
         setUserLocation(coords);
 
         const geojson = {
