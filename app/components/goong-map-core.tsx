@@ -161,22 +161,22 @@ export default function GoongMapCore({
     }
   }, [locations, map]);
 
-  // Watch user position
+  // Watch user position and update route continuously
   const startTrackingUser = () => {
-    if (!navigator.geolocation || !map) {
-      alert("Trình duyệt không hỗ trợ định vị.");
+    if (!navigator.geolocation || !map || !selectedLocation) {
+      alert("Cần có vị trí người dùng và điểm đến.");
       return;
     }
 
     const id = navigator.geolocation.watchPosition(
-      (position) => {
+      async (position) => {
         const coords: [number, number] = [
           position.coords.longitude,
           position.coords.latitude,
         ];
-        new goongjs.Marker({ color: "red" }).setLngLat(coords).addTo(map);
         setUserLocation(coords);
 
+        // Vẽ hoặc cập nhật marker người dùng
         const geojson = {
           type: "FeatureCollection",
           features: [
@@ -193,8 +193,27 @@ export default function GoongMapCore({
         const source = map.getSource("user-realtime") as goongjs.GeoJSONSource;
         if (source) {
           source.setData(geojson);
-          map.flyTo({ center: coords, speed: 0.5, zoom: 14 });
+        } else {
+          map.addSource("user-realtime", {
+            type: "geojson",
+            data: geojson,
+          });
+
+          map.addLayer({
+            id: "user-realtime",
+            type: "symbol",
+            source: "user-realtime",
+            layout: {
+              "icon-image": "marker-15",
+              "icon-size": 1.5,
+            },
+          });
         }
+        new goongjs.Marker({ color: "red" }).setLngLat(coords).addTo(map);
+        map.flyTo({ center: coords, speed: 0.5, zoom: 14 });
+
+        // Gọi lại getDirections mỗi lần di chuyển
+        await getDirections(coords, selectedLocation);
       },
       (error) => {
         if (error.code === error.PERMISSION_DENIED) {
@@ -221,18 +240,16 @@ export default function GoongMapCore({
   };
 
   // Draw direction from user to selectedLocation
-  const getDirections = async () => {
-    if (!map || !userLocation || !selectedLocation) {
-      alert("Cần có vị trí người dùng và điểm đến.");
-      return;
-    }
-
-    const origin = `${userLocation[1]},${userLocation[0]}`;
-    const destination = `${selectedLocation.lat},${selectedLocation.lng}`;
+  const getDirections = async (
+    userCoords: [number, number],
+    destination: { lat: number; lng: number }
+  ) => {
+    const origin = `${userCoords[1]},${userCoords[0]}`;
+    const dest = `${destination.lat},${destination.lng}`;
 
     try {
       const res = await fetch(
-        `https://rsapi.goong.io/Direction?origin=${origin}&destination=${destination}&vehicle=car&api_key=${process.env.NEXT_PUBLIC_GOONG_DIRECTIONS_API_KEY}`
+        `https://rsapi.goong.io/Direction?origin=${origin}&destination=${dest}&vehicle=car&api_key=${process.env.NEXT_PUBLIC_GOONG_DIRECTIONS_API_KEY}`
       );
       const data = await res.json();
 
@@ -270,13 +287,9 @@ export default function GoongMapCore({
         const source = map.getSource("route") as goongjs.GeoJSONSource;
         source.setData(geojson);
       }
-
-      const bounds = new goongjs.LngLatBounds();
-      geojson.geometry.coordinates.forEach((coord) => bounds.extend(coord));
-      map.fitBounds(bounds, { padding: 60 });
     } catch (error) {
-      alert("Lỗi khi lấy chỉ đường.");
-      console.error(error);
+      console.error("Lỗi khi lấy chỉ đường:", error);
+      alert("Không thể lấy chỉ đường.");
     }
   };
 
@@ -291,16 +304,9 @@ export default function GoongMapCore({
               : "bg-blue-600 hover:bg-blue-700"
           }`}
         >
-          {isTracking ? "Dừng theo dõi" : "Vị trí của tôi"}
+          {isTracking ? "Dừng theo dõi" : "Chỉ đường"}
         </button>
-        {selectedLocation && (
-          <button
-            onClick={getDirections}
-            className="px-3 py-2 rounded shadow bg-green-600 text-white hover:bg-green-700"
-          >
-            Chỉ đường đến {selectedLocation.name}
-          </button>
-        )}
+      
       </div>
       <div ref={mapRef} className="w-full h-[500px]" />
     </div>
