@@ -36,6 +36,7 @@ export default function GoongMapCore({
   const [userLocation, setUserLocation] = useState<[number, number] | null>(
     null
   );
+const [userMarker, setUserMarker] = useState<goongjs.Marker | null>(null);
 
   // Init map
   useEffect(() => {
@@ -162,74 +163,84 @@ export default function GoongMapCore({
   }, [locations, map]);
 
   // Watch user position and update route continuously
-  const startTrackingUser = () => {
-    if (!navigator.geolocation || !map || !selectedLocation) {
-      alert("Cần có vị trí người dùng và điểm đến.");
-      return;
-    }
+const startTrackingUser = () => {
+  if (!navigator.geolocation || !map || !selectedLocation) {
+    alert("Cần có vị trí người dùng và điểm đến.");
+    return;
+  }
 
-    const id = navigator.geolocation.watchPosition(
-      async (position) => {
-        const coords: [number, number] = [
-          position.coords.longitude,
-          position.coords.latitude,
-        ];
-        setUserLocation(coords);
+  const id = navigator.geolocation.watchPosition(
+    async (position) => {
+      const coords: [number, number] = [
+        position.coords.longitude,
+        position.coords.latitude,
+      ];
+      setUserLocation(coords);
 
-        // Vẽ hoặc cập nhật marker người dùng
-        const geojson = {
-          type: "FeatureCollection",
-          features: [
-            {
-              type: "Feature",
-              geometry: {
-                type: "Point",
-                coordinates: coords,
-              },
+      const geojson = {
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            geometry: {
+              type: "Point",
+              coordinates: coords,
             },
-          ],
-        };
+          },
+        ],
+      };
 
-        const source = map.getSource("user-realtime") as goongjs.GeoJSONSource;
-        if (source) {
-          source.setData(geojson);
-        } else {
-          map.addSource("user-realtime", {
-            type: "geojson",
-            data: geojson,
-          });
+      const source = map.getSource("user-realtime") as goongjs.GeoJSONSource;
+      if (source) {
+        source.setData(geojson);
+      } else {
+        map.addSource("user-realtime", {
+          type: "geojson",
+          data: geojson,
+        });
 
-          map.addLayer({
-            id: "user-realtime",
-            type: "symbol",
-            source: "user-realtime",
-            layout: {
-              "icon-image": "marker-15",
-              "icon-size": 1.5,
-            },
-          });
-        }
-        new goongjs.Marker({ color: "red" }).setLngLat(coords).addTo(map);
-        map.flyTo({ center: coords, speed: 0.5, zoom: 14 });
+        map.addLayer({
+          id: "user-realtime",
+          type: "symbol",
+          source: "user-realtime",
+          layout: {
+            "icon-image": "marker-15",
+            "icon-size": 1.5,
+          },
+        });
+      }
 
-        // Gọi lại getDirections mỗi lần di chuyển
-        await getDirections(coords, selectedLocation);
-      },
-      (error) => {
-        if (error.code === error.PERMISSION_DENIED) {
-          alert("Bạn đã từ chối cấp quyền truy cập vị trí.");
-        } else if (error.code === error.POSITION_UNAVAILABLE) {
-          alert("Không thể lấy thông tin vị trí.");
-        } else if (error.code === error.TIMEOUT) {
-          alert("Yêu cầu định vị đã hết thời gian.");
-        }
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
+      // Xóa marker cũ nếu có
+      if (userMarker) {
+        userMarker.remove();
+      }
 
-    setWatchId(id);
-    setIsTracking(true);
-  };
+      // Tạo marker mới
+      const newMarker = new goongjs.Marker({ color: "red" })
+        .setLngLat(coords)
+        .addTo(map);
+      setUserMarker(newMarker);
+
+      map.flyTo({ center: coords, speed: 0.5, zoom: 14 });
+
+      // Vẽ lại tuyến đường mới
+      await getDirections(coords, selectedLocation);
+    },
+    (error) => {
+      if (error.code === error.PERMISSION_DENIED) {
+        alert("Bạn đã từ chối cấp quyền truy cập vị trí.");
+      } else if (error.code === error.POSITION_UNAVAILABLE) {
+        alert("Không thể lấy thông tin vị trí.");
+      } else if (error.code === error.TIMEOUT) {
+        alert("Yêu cầu định vị đã hết thời gian.");
+      }
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+  );
+
+  setWatchId(id);
+  setIsTracking(true);
+};
 
   const stopTrackingUser = () => {
     if (watchId !== null) {
