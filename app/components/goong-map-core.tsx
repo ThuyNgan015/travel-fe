@@ -31,11 +31,13 @@ export default function GoongMapCore({
   const mapRef = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<goongjs.Map | null>(null);
   const [markers, setMarkers] = useState<goongjs.Marker[]>([]);
-  const [userMarker, setUserMarker] = useState<goongjs.Marker | null>(null);
   const [watchId, setWatchId] = useState<number | null>(null);
   const [isTracking, setIsTracking] = useState<boolean>(false);
+  const [userLocation, setUserLocation] = useState<[number, number] | null>(
+    null
+  );
 
-  // Khởi tạo bản đồ
+  // Init map
   useEffect(() => {
     if (!mapRef.current || !locations.length) return;
 
@@ -54,14 +56,82 @@ export default function GoongMapCore({
       zoom: 10,
     });
 
-    setMap(mapInstance);
+    mapInstance.on("load", () => {
+      // Add pulsing-dot image
+      const size = 200;
+      const pulsingDot = {
+        width: size,
+        height: size,
+        data: new Uint8Array(size * size * 4),
+        context: null as CanvasRenderingContext2D | null,
 
-    return () => {
-      mapInstance.remove();
-    };
+        onAdd() {
+          const canvas = document.createElement("canvas");
+          canvas.width = this.width;
+          canvas.height = this.height;
+          this.context = canvas.getContext("2d");
+        },
+
+        render() {
+          const duration = 1000;
+          const t = (performance.now() % duration) / duration;
+
+          const radius = (size / 2) * 0.3;
+          const outerRadius = (size / 2) * 0.7 * t + radius;
+          const context = this.context!;
+          context.clearRect(0, 0, this.width, this.height);
+
+          context.beginPath();
+          context.arc(
+            this.width / 2,
+            this.height / 2,
+            outerRadius,
+            0,
+            Math.PI * 2
+          );
+          context.fillStyle = "rgba(255, 200, 200," + (1 - t) + ")";
+          context.fill();
+
+          context.beginPath();
+          context.arc(this.width / 2, this.height / 2, radius, 0, Math.PI * 2);
+          context.fillStyle = "rgba(255, 100, 100, 1)";
+          context.strokeStyle = "white";
+          context.lineWidth = 2 + 4 * (1 - t);
+          context.fill();
+          context.stroke();
+
+          this.data = context.getImageData(0, 0, this.width, this.height).data;
+          mapInstance.triggerRepaint();
+          return true;
+        },
+      };
+
+      mapInstance.addImage("pulsing-dot", pulsingDot as any, { pixelRatio: 2 });
+
+      mapInstance.addSource("user-realtime", {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: [],
+        },
+      });
+
+      mapInstance.addLayer({
+        id: "user-realtime",
+        type: "symbol",
+        source: "user-realtime",
+        layout: {
+          "icon-image": "pulsing-dot",
+          "icon-size": 0.6,
+        },
+      });
+    });
+
+    setMap(mapInstance);
+    return () => mapInstance.remove();
   }, []);
 
-  // Cập nhật marker cho các địa điểm
+  // Add location markers
   useEffect(() => {
     if (!map) return;
 
@@ -91,177 +161,145 @@ export default function GoongMapCore({
     }
   }, [locations, map]);
 
-  // Hàm vẽ tuyến đường
-  const drawRoute = async (
-    userLngLat: goongjs.LngLat,
-    destLngLat: [number, number]
-  ) => {
-    try {
-      const res = await fetch(
-        `/api/get-directions?origin=${userLngLat.lat},${userLngLat.lng}&destination=${destLngLat[1]},${destLngLat[0]}&vehicle=car`
-      );
-
-      if (!res.ok) throw new Error("Không lấy được dữ liệu chỉ đường.");
-
-      const data = await res.json();
-      const encoded = data.routes[0].overview_polyline.points;
-      const coordinates = polyline
-        .decode(encoded)
-        .map(([lat, lng]) => [lng, lat]);
-
-      const geojson = {
-        type: "Feature",
-        geometry: {
-          type: "LineString",
-          coordinates,
-        },
-      };
-
-      if (map!.getSource("route")) {
-        map!.removeLayer("route");
-        map!.removeSource("route");
-      }
-
-      map!.addSource("route", {
-        type: "geojson",
-        data: geojson,
-      });
-
-      map!.addLayer({
-        id: "route",
-        type: "line",
-        source: "route",
-        layout: {
-          "line-join": "round",
-          "line-cap": "round",
-        },
-        paint: {
-          "line-color": "#127dca",
-          "line-width": 5,
-          "line-opacity": 0.8,
-        },
-      });
-
-      const bounds = new goongjs.LngLatBounds();
-      coordinates.forEach((c) => bounds.extend(c as [number, number]));
-      bounds.extend(userLngLat.toArray() as [number, number]);
-      bounds.extend(destLngLat);
-      map!.fitBounds(bounds, { padding: 60 });
-    } catch (err) {
-      console.error(err);
-      alert("Không thể lấy dữ liệu chỉ đường.");
-    }
-  };
-
-  // Hàm theo dõi vị trí và cập nhật tuyến đường
-  const startTrackingAndDirections = async () => {
-    if (!map || !navigator.geolocation || !selectedLocation) {
-      alert("Hãy chọn điểm đến và đảm bảo trình duyệt hỗ trợ định vị.");
+  // Watch user position
+  const startTrackingUser = () => {
+    if (!navigator.geolocation || !map) {
+      alert("Trình duyệt không hỗ trợ định vị.");
       return;
     }
 
-    if (isTracking) {
-      // Dừng theo dõi
-      if (watchId) {
-        navigator.geolocation.clearWatch(watchId);
-        setWatchId(null);
-        setIsTracking(false);
-        userMarker?.remove();
-        setUserMarker(null);
-        if (map.getSource("route")) {
-          map.removeLayer("route");
-          map.removeSource("route");
-        }
-      }
-      return;
-    }
-
-    // Bắt đầu theo dõi và vẽ tuyến đường
     const id = navigator.geolocation.watchPosition(
-      async (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
+      (position) => {
+        const coords: [number, number] = [
+          position.coords.longitude,
+          position.coords.latitude,
+        ];
+        setUserLocation(coords);
 
-        // Xóa marker cũ
-        userMarker?.remove();
+        const geojson = {
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              geometry: {
+                type: "Point",
+                coordinates: coords,
+              },
+            },
+          ],
+        };
 
-        // Tạo marker mới
-        const marker = new goongjs.Marker({ color: "red" })
-          .setLngLat([lng, lat])
-          .setPopup(new goongjs.Popup().setText("Bạn đang ở đây"))
-          .addTo(map);
-
-        setUserMarker(marker);
-
-        // Vẽ tuyến đường từ vị trí hiện tại đến điểm đến
-        await drawRoute(new goongjs.LngLat(lng, lat), [
-          selectedLocation.lng,
-          selectedLocation.lat,
-        ]);
+        const source = map.getSource("user-realtime") as goongjs.GeoJSONSource;
+        if (source) {
+          source.setData(geojson);
+          map.flyTo({ center: coords, speed: 0.5, zoom: 14 });
+        }
       },
-      (err) => {
-        alert("Lỗi định vị: " + err.message);
+      (error) => {
+        if (error.code === error.PERMISSION_DENIED) {
+          alert("Bạn đã từ chối cấp quyền truy cập vị trí.");
+        } else if (error.code === error.POSITION_UNAVAILABLE) {
+          alert("Không thể lấy thông tin vị trí.");
+        } else if (error.code === error.TIMEOUT) {
+          alert("Yêu cầu định vị đã hết thời gian.");
+        }
       },
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0,
-      }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
 
     setWatchId(id);
     setIsTracking(true);
   };
 
-  // Xác định vị trí một lần
-  const handleLocateUser = () => {
-    if (!map || isTracking) return;
+  const stopTrackingUser = () => {
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+      setWatchId(null);
+      setIsTracking(false);
+    }
+  };
 
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const lat = pos.coords.latitude;
-          const lng = pos.coords.longitude;
+  // Draw direction from user to selectedLocation
+  const getDirections = async () => {
+    if (!map || !userLocation || !selectedLocation) {
+      alert("Cần có vị trí người dùng và điểm đến.");
+      return;
+    }
 
-          userMarker?.remove();
+    const origin = `${userLocation[1]},${userLocation[0]}`;
+    const destination = `${selectedLocation.lat},${selectedLocation.lng}`;
 
-          const marker = new goongjs.Marker({ color: "red" })
-            .setLngLat([lng, lat])
-            .setPopup(new goongjs.Popup().setText("Vị trí của bạn"))
-            .addTo(map);
-
-          setUserMarker(marker);
-          map.flyTo({ center: [lng, lat], zoom: 12 });
-        },
-        (err) => alert("Lỗi định vị: " + err.message),
-        {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0,
-        }
+    try {
+      const res = await fetch(
+        `https://rsapi.goong.io/Direction?origin=${origin}&destination=${destination}&vehicle=car&api_key=${process.env.NEXT_PUBLIC_GOONG_DIRECTIONS_API_KEY}`
       );
-    } else {
-      alert("Trình duyệt không hỗ trợ định vị.");
+      const data = await res.json();
+
+      const route = data.routes[0];
+      const decoded = polyline.decode(route.overview_polyline.points);
+
+      const geojson = {
+        type: "Feature",
+        geometry: {
+          type: "LineString",
+          coordinates: decoded.map(([lat, lng]) => [lng, lat]),
+        },
+      };
+
+      if (!map.getSource("route")) {
+        map.addSource("route", {
+          type: "geojson",
+          data: geojson,
+        });
+
+        map.addLayer({
+          id: "route",
+          type: "line",
+          source: "route",
+          layout: {
+            "line-join": "round",
+            "line-cap": "round",
+          },
+          paint: {
+            "line-color": "#1D4ED8",
+            "line-width": 5,
+          },
+        });
+      } else {
+        const source = map.getSource("route") as goongjs.GeoJSONSource;
+        source.setData(geojson);
+      }
+
+      const bounds = new goongjs.LngLatBounds();
+      geojson.geometry.coordinates.forEach((coord) => bounds.extend(coord));
+      map.fitBounds(bounds, { padding: 60 });
+    } catch (error) {
+      alert("Lỗi khi lấy chỉ đường.");
+      console.error(error);
     }
   };
 
   return (
     <div className="relative w-full h-full rounded-lg overflow-hidden">
-      <div className="absolute z-10 top-4 left-4 flex gap-2">
+      <div className="absolute z-10 top-4 left-4 flex gap-2 flex-wrap">
         <button
-          onClick={handleLocateUser}
-          className="bg-blue-600 text-white px-3 py-2 rounded shadow hover:bg-blue-700"
-        >
-          Vị trí của tôi
-        </button>
-        <button
-          onClick={startTrackingAndDirections}
-          className={`bg-green-600 text-white px-3 py-2 rounded shadow hover:bg-green-700 ${
-            isTracking ? "bg-red-600 hover:bg-red-700" : ""
+          onClick={isTracking ? stopTrackingUser : startTrackingUser}
+          className={`px-3 py-2 rounded shadow text-white ${
+            isTracking
+              ? "bg-red-600 hover:bg-red-700"
+              : "bg-blue-600 hover:bg-blue-700"
           }`}
         >
-          {isTracking ? "Dừng chỉ đường" : "Chỉ đường"}
+          {isTracking ? "Dừng theo dõi" : "Vị trí của tôi"}
         </button>
+        {selectedLocation && (
+          <button
+            onClick={getDirections}
+            className="px-3 py-2 rounded shadow bg-green-600 text-white hover:bg-green-700"
+          >
+            Chỉ đường đến {selectedLocation.name}
+          </button>
+        )}
       </div>
       <div ref={mapRef} className="w-full h-[500px]" />
     </div>
