@@ -36,7 +36,7 @@ export default function GoongMapCore({
   const [userLocation, setUserLocation] = useState<[number, number] | null>(
     null
   );
-const [userMarker, setUserMarker] = useState<goongjs.Marker | null>(null);
+  const [userMarker, setUserMarker] = useState<goongjs.Marker | null>(null);
 
   // Init map
   useEffect(() => {
@@ -55,77 +55,6 @@ const [userMarker, setUserMarker] = useState<goongjs.Marker | null>(null);
       style: "https://tiles.goong.io/assets/goong_map_web.json",
       center: [centerLng, centerLat],
       zoom: 10,
-    });
-
-    mapInstance.on("load", () => {
-      // Add pulsing-dot image
-      const size = 200;
-      const pulsingDot = {
-        width: size,
-        height: size,
-        data: new Uint8Array(size * size * 4),
-        context: null as CanvasRenderingContext2D | null,
-
-        onAdd() {
-          const canvas = document.createElement("canvas");
-          canvas.width = this.width;
-          canvas.height = this.height;
-          this.context = canvas.getContext("2d");
-        },
-
-        render() {
-          const duration = 1000;
-          const t = (performance.now() % duration) / duration;
-
-          const radius = (size / 2) * 0.3;
-          const outerRadius = (size / 2) * 0.7 * t + radius;
-          const context = this.context!;
-          context.clearRect(0, 0, this.width, this.height);
-
-          context.beginPath();
-          context.arc(
-            this.width / 2,
-            this.height / 2,
-            outerRadius,
-            0,
-            Math.PI * 2
-          );
-          context.fillStyle = "rgba(255, 200, 200," + (1 - t) + ")";
-          context.fill();
-
-          context.beginPath();
-          context.arc(this.width / 2, this.height / 2, radius, 0, Math.PI * 2);
-          context.fillStyle = "rgba(255, 100, 100, 1)";
-          context.strokeStyle = "white";
-          context.lineWidth = 2 + 4 * (1 - t);
-          context.fill();
-          context.stroke();
-
-          this.data = context.getImageData(0, 0, this.width, this.height).data;
-          mapInstance.triggerRepaint();
-          return true;
-        },
-      };
-
-      mapInstance.addImage("pulsing-dot", pulsingDot as any, { pixelRatio: 2 });
-
-      mapInstance.addSource("user-realtime", {
-        type: "geojson",
-        data: {
-          type: "FeatureCollection",
-          features: [],
-        },
-      });
-
-      mapInstance.addLayer({
-        id: "user-realtime",
-        type: "symbol",
-        source: "user-realtime",
-        layout: {
-          "icon-image": "pulsing-dot",
-          "icon-size": 0.6,
-        },
-      });
     });
 
     setMap(mapInstance);
@@ -162,93 +91,112 @@ const [userMarker, setUserMarker] = useState<goongjs.Marker | null>(null);
     }
   }, [locations, map]);
 
+  // Update user marker position
+  const updateUserMarker = (coords: [number, number]) => {
+    // Xóa marker cũ nếu có
+    if (userMarker) {
+      userMarker.remove();
+    }
+
+    // Tạo marker mới
+    const newUserMarker = new goongjs.Marker({ color: "red" })
+      .setLngLat(coords)
+      .setPopup(new goongjs.Popup().setText("Vị trí của bạn"))
+      .addTo(map!);
+    
+    setUserMarker(newUserMarker);
+  };
+
   // Watch user position and update route continuously
-const startTrackingUser = () => {
-  if (!navigator.geolocation || !map || !selectedLocation) {
-    alert("Cần có vị trí người dùng và điểm đến.");
-    return;
-  }
+  const startTrackingUser = () => {
+    if (!navigator.geolocation || !map || !selectedLocation) {
+      alert("Cần có vị trí người dùng và điểm đến.");
+      return;
+    }
 
-  const id = navigator.geolocation.watchPosition(
-    async (position) => {
-      const coords: [number, number] = [
-        position.coords.longitude,
-        position.coords.latitude,
-      ];
-      setUserLocation(coords);
+    // Dừng tracking cũ nếu có
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+    }
 
-      const geojson = {
-        type: "FeatureCollection",
-        features: [
-          {
-            type: "Feature",
-            geometry: {
-              type: "Point",
-              coordinates: coords,
-            },
-          },
-        ],
-      };
+    // Xóa marker cũ trước khi bắt đầu tracking mới
+    if (userMarker) {
+      userMarker.remove();
+      setUserMarker(null);
+    }
 
-      const source = map.getSource("user-realtime") as goongjs.GeoJSONSource;
-      if (source) {
-        source.setData(geojson);
-      } else {
-        map.addSource("user-realtime", {
-          type: "geojson",
-          data: geojson,
-        });
+    const id = navigator.geolocation.watchPosition(
+      async (position) => {
+        const coords: [number, number] = [
+          position.coords.longitude,
+          position.coords.latitude,
+        ];
+        
+        setUserLocation(coords);
+        updateUserMarker(coords);
 
-        map.addLayer({
-          id: "user-realtime",
-          type: "symbol",
-          source: "user-realtime",
-          layout: {
-            "icon-image": "marker-15",
-            "icon-size": 1.5,
-          },
-        });
-      }
+        // Di chuyển camera đến vị trí người dùng
+        map.flyTo({ center: coords, speed: 0.5, zoom: 14 });
 
-      // Xóa marker cũ nếu có
-      if (userMarker) {
-        userMarker.remove();
-      }
+        // Vẽ lại tuyến đường mới
+        await getDirections(coords, selectedLocation);
+      },
+      (error) => {
+        console.error("Lỗi định vị:", error);
+        if (error.code === error.PERMISSION_DENIED) {
+          alert("Bạn đã từ chối cấp quyền truy cập vị trí.");
+        } else if (error.code === error.POSITION_UNAVAILABLE) {
+          alert("Không thể lấy thông tin vị trí.");
+        } else if (error.code === error.TIMEOUT) {
+          alert("Yêu cầu định vị đã hết thời gian.");
+        }
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 1000 }
+    );
 
-      // Tạo marker mới
-      const newMarker = new goongjs.Marker({ color: "red" })
-        .setLngLat(coords)
-        .addTo(map);
-      setUserMarker(newMarker);
-
-      map.flyTo({ center: coords, speed: 0.5, zoom: 14 });
-
-      // Vẽ lại tuyến đường mới
-      await getDirections(coords, selectedLocation);
-    },
-    (error) => {
-      if (error.code === error.PERMISSION_DENIED) {
-        alert("Bạn đã từ chối cấp quyền truy cập vị trí.");
-      } else if (error.code === error.POSITION_UNAVAILABLE) {
-        alert("Không thể lấy thông tin vị trí.");
-      } else if (error.code === error.TIMEOUT) {
-        alert("Yêu cầu định vị đã hết thời gian.");
-      }
-    },
-    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-  );
-
-  setWatchId(id);
-  setIsTracking(true);
-};
+    setWatchId(id);
+    setIsTracking(true);
+  };
 
   const stopTrackingUser = () => {
     if (watchId !== null) {
       navigator.geolocation.clearWatch(watchId);
       setWatchId(null);
-      setIsTracking(false);
+    }
+    
+    setIsTracking(false);
+    
+    // Xóa marker người dùng khi dừng tracking
+    if (userMarker) {
+      userMarker.remove();
+      setUserMarker(null);
+    }
+    
+    // Reset user location
+    setUserLocation(null);
+    
+    // Xóa route nếu có
+    if (map && map.getSource("route")) {
+      try {
+        map.removeLayer("route");
+        map.removeSource("route");
+      } catch (error) {
+        console.log("Route đã được xóa trước đó");
+      }
     }
   };
+
+  // Cleanup when component unmounts or map changes
+  useEffect(() => {
+    return () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+      if (userMarker) {
+        userMarker.remove();
+      }
+    };
+  }, [watchId, userMarker]);
 
   // Draw direction from user to selectedLocation
   const getDirections = async (
@@ -317,7 +265,6 @@ const startTrackingUser = () => {
         >
           {isTracking ? "Dừng theo dõi" : "Chỉ đường"}
         </button>
-      
       </div>
       <div ref={mapRef} className="w-full h-[500px]" />
     </div>
