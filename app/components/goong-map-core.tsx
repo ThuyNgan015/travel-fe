@@ -33,9 +33,6 @@ export default function GoongMapCore({
   const [markers, setMarkers] = useState<goongjs.Marker[]>([]);
   const [watchId, setWatchId] = useState<number | null>(null);
   const [isTracking, setIsTracking] = useState<boolean>(false);
-  const [userLocation, setUserLocation] = useState<[number, number] | null>(
-    null
-  );
   const [userMarker, setUserMarker] = useState<goongjs.Marker | null>(null);
 
   // Init map
@@ -91,26 +88,10 @@ export default function GoongMapCore({
     }
   }, [locations, map]);
 
-  // Update user marker position
-  const updateUserMarker = (coords: [number, number]) => {
-    // Xóa marker cũ nếu có
-    if (userMarker) {
-      userMarker.remove();
-    }
-
-    // Tạo marker mới
-    const newUserMarker = new goongjs.Marker({ color: "red" })
-      .setLngLat(coords)
-      .setPopup(new goongjs.Popup().setText("Vị trí của bạn"))
-      .addTo(map!);
-    
-    setUserMarker(newUserMarker);
-  };
-
-  // Watch user position and update route continuously
+  // Theo dõi vị trí user
   const startTrackingUser = () => {
-    if (!navigator.geolocation || !map || !selectedLocation) {
-      alert("Cần có vị trí người dùng và điểm đến.");
+    if (!navigator.geolocation || !map) {
+      alert("Trình duyệt không hỗ trợ định vị.");
       return;
     }
 
@@ -119,39 +100,41 @@ export default function GoongMapCore({
       navigator.geolocation.clearWatch(watchId);
     }
 
-    // Xóa marker cũ trước khi bắt đầu tracking mới
-    if (userMarker) {
-      userMarker.remove();
-      setUserMarker(null);
-    }
-
     const id = navigator.geolocation.watchPosition(
-      async (position) => {
+      (position) => {
         const coords: [number, number] = [
           position.coords.longitude,
           position.coords.latitude,
         ];
         
-        setUserLocation(coords);
-        updateUserMarker(coords);
+        // Cập nhật hoặc tạo marker user
+        if (userMarker) {
+          // Di chuyển marker đến vị trí mới
+          userMarker.setLngLat(coords);
+        } else {
+          // Tạo marker mới cho user
+          const newUserMarker = new goongjs.Marker({ color: "red" })
+            .setLngLat(coords)
+            .setPopup(new goongjs.Popup().setText("Vị trí của bạn"))
+            .addTo(map);
+          
+          setUserMarker(newUserMarker);
+        }
 
-        // Di chuyển camera đến vị trí người dùng
-        map.flyTo({ center: coords, speed: 0.5, zoom: 14 });
-
-        // Vẽ lại tuyến đường mới
-        await getDirections(coords, selectedLocation);
+        // Vẽ lại tuyến đường nếu có điểm đến được chọn
+        if (selectedLocation) {
+          getDirections(coords, selectedLocation);
+        }
       },
       (error) => {
         console.error("Lỗi định vị:", error);
-        if (error.code === error.PERMISSION_DENIED) {
-          alert("Bạn đã từ chối cấp quyền truy cập vị trí.");
-        } else if (error.code === error.POSITION_UNAVAILABLE) {
-          alert("Không thể lấy thông tin vị trí.");
-        } else if (error.code === error.TIMEOUT) {
-          alert("Yêu cầu định vị đã hết thời gian.");
-        }
+        alert("Không thể lấy vị trí của bạn.");
       },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 1000 }
+      { 
+        enableHighAccuracy: true, 
+        timeout: 15000, 
+        maximumAge: 1000 
+      }
     );
 
     setWatchId(id);
@@ -166,14 +149,11 @@ export default function GoongMapCore({
     
     setIsTracking(false);
     
-    // Xóa marker người dùng khi dừng tracking
+    // Xóa marker người dùng
     if (userMarker) {
       userMarker.remove();
       setUserMarker(null);
     }
-    
-    // Reset user location
-    setUserLocation(null);
     
     // Xóa route nếu có
     if (map && map.getSource("route")) {
@@ -181,12 +161,12 @@ export default function GoongMapCore({
         map.removeLayer("route");
         map.removeSource("route");
       } catch (error) {
-        console.log("Route đã được xóa trước đó");
+        console.log("Route đã được xóa");
       }
     }
   };
 
-  // Cleanup when component unmounts or map changes
+  // Cleanup khi component unmount
   useEffect(() => {
     return () => {
       if (watchId !== null) {
@@ -198,7 +178,7 @@ export default function GoongMapCore({
     };
   }, [watchId, userMarker]);
 
-  // Draw direction from user to selectedLocation
+  // Vẽ đường đi từ user đến điểm đến
   const getDirections = async (
     userCoords: [number, number],
     destination: { lat: number; lng: number }
@@ -248,22 +228,21 @@ export default function GoongMapCore({
       }
     } catch (error) {
       console.error("Lỗi khi lấy chỉ đường:", error);
-      alert("Không thể lấy chỉ đường.");
     }
   };
 
   return (
     <div className="relative w-full h-full rounded-lg overflow-hidden">
-      <div className="absolute z-10 top-4 left-4 flex gap-2 flex-wrap">
+      <div className="absolute z-10 top-4 left-4">
         <button
           onClick={isTracking ? stopTrackingUser : startTrackingUser}
-          className={`px-3 py-2 rounded shadow text-white ${
+          className={`px-4 py-2 rounded shadow text-white font-medium ${
             isTracking
               ? "bg-red-600 hover:bg-red-700"
               : "bg-blue-600 hover:bg-blue-700"
           }`}
         >
-          {isTracking ? "Dừng theo dõi" : "Chỉ đường"}
+          {isTracking ? "Dừng theo dõi vị trí" : "Theo dõi vị trí của tôi"}
         </button>
       </div>
       <div ref={mapRef} className="w-full h-[500px]" />
